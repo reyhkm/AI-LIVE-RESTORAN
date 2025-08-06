@@ -4,15 +4,8 @@ import './LiveVoiceStream.css';
 
 // --- Konfigurasi Berdasarkan Dokumentasi Terbaru ---
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-
-// Model Native Audio untuk kualitas suara terbaik dan fitur canggih.
-// Sumber: https://ai.google.dev/gemini-api/docs/models#gemini-2.5-flash-native-audio
 const NATIVE_AUDIO_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog';
-
-// Sample rate yang direkomendasikan untuk input audio.
-// Sumber: https://ai.google.dev/gemini-api/docs/live-guide#audio-formats
 const INPUT_SAMPLE_RATE = 16000; 
-const OUTPUT_SAMPLE_RATE = 24000; // Output audio dari Live API selalu 24kHz.
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -39,7 +32,6 @@ const LiveVoiceStream = () => {
     const audioData = audioQueueRef.current.shift();
     
     try {
-      // Audio dari server adalah base64, kita perlu decode
       const audioBlob = await (await fetch(`data:audio/ogg;base64,${audioData}`)).blob();
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
@@ -60,20 +52,17 @@ const LiveVoiceStream = () => {
   const connect = async () => {
     setStatusMessage('Menghubungkan ke AI...');
     try {
-      // Menggunakan ai.live.connect sesuai dokumentasi
-      // Sumber: https://ai.google.dev/gemini-api/docs/live
       const session = await ai.live.connect({
         model: NATIVE_AUDIO_MODEL,
         config: {
-          // Meminta AI untuk merespons dengan audio
           responseModalities: [Modality.AUDIO],
-          // Memberi tahu AI format audio yang kita kirim
           speechConfig: {
             sampleRateHertz: INPUT_SAMPLE_RATE,
           },
         },
         callbacks: {
           onopen: () => {
+            console.log("Koneksi Live AI terbuka.");
             setIsConnected(true);
             setStatusMessage('Terhubung. Silakan bicara.');
           },
@@ -93,10 +82,12 @@ const LiveVoiceStream = () => {
           onerror: (e) => {
             console.error("Error koneksi:", e);
             setStatusMessage('Error. Coba lagi.');
+            setIsConnected(false); // Set isConnected ke false saat error
             stopListening();
           },
           onclose: () => {
-            setIsConnected(false);
+            console.log("Koneksi Live AI ditutup.");
+            setIsConnected(false); // Set isConnected ke false saat ditutup
             setStatusMessage('Koneksi terputus.');
           },
         },
@@ -105,6 +96,7 @@ const LiveVoiceStream = () => {
     } catch (error) {
       console.error("Gagal koneksi:", error);
       setStatusMessage('Gagal terhubung. Cek API Key.');
+      setIsConnected(false);
     }
   };
 
@@ -117,7 +109,7 @@ const LiveVoiceStream = () => {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream; // Simpan stream untuk bisa dihentikan nanti
+      mediaStreamRef.current = stream;
       audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: INPUT_SAMPLE_RATE,
       });
@@ -125,7 +117,10 @@ const LiveVoiceStream = () => {
       
       processorRef.current = audioContextRef.current.createScriptProcessor(1024, 1, 1);
       processorRef.current.onaudioprocess = (event) => {
-        if (sessionRef.current && sessionRef.current.isOpen()) {
+        // ==================================================
+        // INI BAGIAN YANG DIPERBAIKI
+        // ==================================================
+        if (sessionRef.current && isConnected) {
           const inputData = event.inputBuffer.getChannelData(0);
           sessionRef.current.send(inputData);
         }
@@ -142,11 +137,9 @@ const LiveVoiceStream = () => {
   };
 
   const stopListening = () => {
-    if (!isListening) return;
+    if (!isListening && !isConnected) return; // Hindari menjalankan jika sudah berhenti
     setIsListening(false);
-    setStatusMessage('Klik "Start" untuk memulai');
-
-    // Hentikan track mikrofon
+    
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
@@ -155,7 +148,7 @@ const LiveVoiceStream = () => {
       processorRef.current.disconnect();
       processorRef.current = null;
     }
-    if (audioContextRef.current) {
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
@@ -173,7 +166,6 @@ const LiveVoiceStream = () => {
     }
   };
 
-  // Efek cleanup untuk memastikan koneksi ditutup saat komponen hilang
   useEffect(() => {
     return () => {
       stopListening();
